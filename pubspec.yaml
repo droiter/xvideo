@@ -1,0 +1,28 @@
+name: xvideo
+description: "xVideo 家庭视频库（平板 / 手机），Flutter 实现。"
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.6.1
+  shared_preferences: ^2.3.3
+  video_player: ^2.9.2
+  file_picker: ^13.0.0
+  android_file_picker: ^2.0.0
+  path_provider: ^2.1.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # 测试里用假播放器顶上平台通道，才能验证「正在播」时的行为。
+  video_player_platform_interface: ^6.9.0
+
+flutter:
+  uses-material-design: true
