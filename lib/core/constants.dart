@@ -13,6 +13,9 @@ const String kSessionKey = 'xvideo_session'; // 当前登录用户
 const String kSeenOnboardingKey = 'xvideo_seen_onboarding';
 const String kDarkModeKey = 'xvideo_dark';
 
+/// 播放页的「循环播放」开关。全机共用一份，下次进播放页照旧。
+const String kVideoLoopKey = 'xvideo_video_loop';
+
 /// 视频库：分类 + 视频。全机共用一份（家长加片，孩子看）。
 const String kVideoLibraryKey = 'xvideo_video_lib';
 

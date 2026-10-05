@@ -1,33 +1,43 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../core/constants.dart';
 import '../../state/providers.dart';
 
 /// 视频播放页。
 ///
 /// 这里**不做任何返回拦截**：按返回键随时退回到上一页，
-/// 不弹家长验证，也不受播放进度影响。放完则自动退回视频列表。
-class VideoPlayerScreen extends StatefulWidget {
+/// 不弹家长验证，也不受播放进度影响。放完则自动退回视频列表，
+/// 除非打开了控制条上的「循环播放」——那就从头再来一遍。
+class VideoPlayerScreen extends ConsumerStatefulWidget {
   const VideoPlayerScreen({super.key, required this.video});
 
   final VideoItem video;
 
   @override
-  State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
+  ConsumerState<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
 }
 
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
+class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   VideoPlayerController? _controller;
   String? _error;
 
   /// 已经因为播完退回去过了，别再退第二次。
   bool _leftAfterEnd = false;
 
+  /// 循环播放开关，跟着上一次的选择走。
+  bool _loop = false;
+
+  /// 这一轮播完已经绕回去过了；等画面真的重新走起来再放行下一次。
+  bool _restartedLoop = false;
+
   @override
   void initState() {
     super.initState();
+    _loop = ref.read(prefsProvider).getBool(kVideoLoopKey) ?? false;
     _init();
   }
 
@@ -39,6 +49,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     _controller = controller;
     try {
       await controller.initialize();
+      if (!mounted) return;
+      // 循环交给播放器自己做：到头不回退、不黑一下。
+      await controller.setLooping(_loop);
       if (!mounted) return;
       setState(() {});
       // 挂在播放器上而不是写在 build 里：build 期间动导航栈会直接断言失败。
@@ -63,15 +76,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     await _init();
   }
 
-  /// 放完就退回视频列表。
+  /// 放完就退回视频列表；开着循环就从头再来。
   void _onPlaybackChanged() {
     final c = _controller;
     if (c == null || !mounted || _leftAfterEnd) return;
-    if (!c.value.isCompleted) return;
+    if (!c.value.isCompleted) {
+      _restartedLoop = false;
+      return;
+    }
+    if (_loop) {
+      // 一般让播放器自己接上（setLooping），这里兜住那些仍然报「播完」的机型。
+      if (_restartedLoop) return;
+      _restartedLoop = true;
+      c.seekTo(Duration.zero);
+      c.play();
+      return;
+    }
     // 先按住声音再退，不然退出去的瞬间还响着。
     c.pause();
     _leftAfterEnd = true;
     Navigator.of(context).maybePop();
+  }
+
+  /// 开关循环播放，并记住这次的选择。
+  void _toggleLoop() {
+    setState(() => _loop = !_loop);
+    _controller?.setLooping(_loop);
+    ref.read(prefsProvider).setBool(kVideoLoopKey, _loop);
   }
 
   /// 点画面只用来「接着播」。
@@ -203,6 +234,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                   style: const TextStyle(color: Colors.white70, fontSize: 12.5),
                 ),
                 const Spacer(),
+                // 开着的时候按钮亮起来，一眼能看出现在是不是在循环。
+                TextButton.icon(
+                  onPressed: _toggleLoop,
+                  icon: const Icon(Icons.repeat_rounded, size: 18),
+                  label: const Text('循环'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: _loop ? Colors.white : Colors.white38,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: const Size(0, 36),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
                 Padding(
                   padding: const EdgeInsets.only(right: 14),
                   child: Text(

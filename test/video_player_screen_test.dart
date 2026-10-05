@@ -22,6 +22,7 @@ class _FakePlayer extends VideoPlayerPlatform {
 
   StreamController<VideoEvent>? _events;
   bool isPlaying = false;
+  bool looping = false;
   Duration position = Duration.zero;
   final Duration total = const Duration(seconds: 30);
 
@@ -42,7 +43,10 @@ class _FakePlayer extends VideoPlayerPlatform {
   }
 
   @override
-  Future<void> setLooping(int playerId, bool looping) async {}
+  Future<void> setLooping(int playerId, bool looping) async {
+    this.looping = looping;
+    calls.add('loop:${looping ? 'on' : 'off'}');
+  }
 
   @override
   Future<void> setVolume(int playerId, double volume) async {}
@@ -180,6 +184,69 @@ void main() {
     expect(find.byType(VideoCategoryScreen), findsOneWidget);
     // 退出去之前先把声音停了，别让声音跟着退场动画继续响。
     expect(fake.isPlaying, isFalse);
+  });
+
+  testWidgets('开循环后播完从头再来，关掉后照旧退回列表', (tester) async {
+    final fake = await _openPlayer(tester);
+
+    await tester.tap(find.text('循环'));
+    await _settle(tester);
+    expect(fake.looping, isTrue);
+
+    fake.calls.clear();
+    fake.finish();
+    await _settle(tester);
+
+    // 人还在播放页上，画面重新走起来了。
+    expect(find.byType(VideoPlayerScreen), findsOneWidget);
+    expect(fake.calls, contains('seek'));
+    expect(fake.isPlaying, isTrue);
+
+    await tester.tap(find.text('循环'));
+    await _settle(tester);
+    expect(fake.looping, isFalse);
+
+    fake.finish();
+    await _pumpUntilGone(tester, find.byType(VideoPlayerScreen));
+    expect(find.byType(VideoPlayerScreen), findsNothing);
+    expect(fake.isPlaying, isFalse);
+  });
+
+  testWidgets('循环开关记在本机上，再进播放页还是开的', (tester) async {
+    final fake = await _openPlayer(tester);
+    expect(fake.looping, isFalse);
+
+    await tester.tap(find.text('循环'));
+    await _settle(tester);
+    expect(fake.looping, isTrue);
+
+    // 退回列表，再点进同一个视频。
+    await tester.pageBack();
+    await _settle(tester);
+    await tester.tap(find.text('小猪佩奇 第 1 集'));
+    await _settle(tester);
+    fake.ready();
+    await _settle(tester);
+
+    expect(find.byType(VideoPlayerScreen), findsOneWidget);
+    expect(fake.looping, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('窄屏手机上多出来的循环按钮也不会把控制条挤出屏幕', (tester) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await _openPlayer(tester);
+
+    expect(tester.getRect(find.text('循环')).right, lessThanOrEqualTo(360));
+    expect(tester.getRect(find.text('网络视频')).right, lessThanOrEqualTo(360));
+    expect(tester.takeException(), isNull);
+
+    await _tearDownTree(tester);
   });
 
   testWidgets('播放中摸画面不会暂停', (tester) async {
