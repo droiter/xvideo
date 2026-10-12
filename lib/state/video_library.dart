@@ -20,6 +20,7 @@ class VideoItem {
     required this.source,
     required this.kind,
     this.fingerprint = '',
+    this.hidden = false,
   });
 
   factory VideoItem.fromJson(Map<String, dynamic> json) => VideoItem(
@@ -28,6 +29,7 @@ class VideoItem {
         source: json['source'] as String? ?? '',
         kind: json['kind'] == 'file' ? VideoKind.file : VideoKind.link,
         fingerprint: json['fingerprint'] as String? ?? '',
+        hidden: json['hidden'] == true,
       );
 
   final String id;
@@ -41,7 +43,20 @@ class VideoItem {
   /// 「同一个文件又选了一遍」，所以趁还在源路径上先记下这个特征。
   final String fingerprint;
 
+  /// 家长把这个视频收起来了：分类列表里不给孩子看，家长模式下才显出来。
+  /// 只是从列表里藏起来，视频本身没删。
+  final bool hidden;
+
   bool get isLocal => kind == VideoKind.file;
+
+  VideoItem copyWith({String? title, bool? hidden}) => VideoItem(
+        id: id,
+        title: title ?? this.title,
+        source: source,
+        kind: kind,
+        fingerprint: fingerprint,
+        hidden: hidden ?? this.hidden,
+      );
 
   /// 查重用的键：有指纹的用指纹，没有的（链接、早先存下的数据）用 [source]。
   /// 链接的 source 本身就是地址；老的本机视频 source 是各自唯一的路径，
@@ -57,6 +72,8 @@ class VideoItem {
         'source': source,
         'kind': kind.name,
         'fingerprint': fingerprint,
+        // 没被收起来的就不写这个键，省得把老数据的格式搅乱。
+        if (hidden) 'hidden': true,
       };
 }
 
@@ -81,6 +98,13 @@ class VideoCategory {
   final String id;
   final String name;
   final List<VideoItem> videos;
+
+  /// 给孩子看的那些：家长收起来的（[VideoItem.hidden]）不算。
+  List<VideoItem> get visibleVideos =>
+      [for (final v in videos) if (!v.hidden) v];
+
+  /// 被家长收起来的有几个。
+  int get hiddenCount => videos.length - visibleVideos.length;
 
   /// 分类里有没有撞上 [dedupKey] 的视频。
   VideoItem? findDuplicate(String dedupKey) {
@@ -133,8 +157,14 @@ class VideoLibrary {
 
   bool get isEmpty => categories.isEmpty;
 
+  /// 库里一共几个视频（家长收起来的也算）。
   int get totalVideos =>
       categories.fold(0, (sum, c) => sum + c.videos.length);
+
+  /// 孩子能看到的几个（收起来的不算）。列表上露给孩子的数字用它，
+  /// 「我的」那边报总数用 [totalVideos]。
+  int get visibleCount =>
+      categories.fold(0, (sum, c) => sum + c.visibleVideos.length);
 
   VideoCategory? byId(String id) {
     for (final c in categories) {
@@ -161,6 +191,9 @@ class AddVideoResult {
   /// 最终用的名字。加进去了就是可能带了编号的新名字，没加进去就是原来的名字。
   final String title;
 }
+
+/// 家长在分类列表里怎么挪一个视频，见 [VideoLibraryController.moveVideo]。
+enum VideoMove { up, down, top, bottom }
 
 /// 视频库的增删改，落盘到 SharedPreferences（全机一份）。
 class VideoLibraryController extends Notifier<VideoLibrary> {
@@ -283,6 +316,59 @@ class VideoLibraryController extends Notifier<VideoLibrary> {
             : c,
     ]));
   }
+
+  /// 家长把视频收起来 / 放出来。收起来的在分类列表里不给孩子看，视频本身没删。
+  Future<void> setVideoHidden(
+    String categoryId,
+    String videoId, {
+    required bool hidden,
+  }) =>
+      _updateVideo(categoryId, videoId, (v) => v.copyWith(hidden: hidden));
+
+  /// 家长挪一个视频的位置：[VideoMove.up] 往前一位、[VideoMove.down] 往后一位、
+  /// [VideoMove.top] / [VideoMove.bottom] 直接挪到最前 / 最后。
+  ///
+  /// 顺序就是分类里那个列表的顺序，收起来的视频也占着位置 —— 所以「向前排一位」
+  /// 跨过一个藏起来的视频时，孩子那边看着可能没动。
+  Future<void> moveVideo(
+      String categoryId, String videoId, VideoMove move) async {
+    final category = state.byId(categoryId);
+    if (category == null) return;
+    final videos = [...category.videos];
+    final from = videos.indexWhere((v) => v.id == videoId);
+    if (from < 0) return;
+    final to = switch (move) {
+      VideoMove.up => from - 1,
+      VideoMove.down => from + 1,
+      VideoMove.top => 0,
+      VideoMove.bottom => videos.length - 1,
+    };
+    // 已经在头上 / 尾上再挪就什么也不做（界面上那几项也会置灰）。
+    if (to == from || to < 0 || to >= videos.length) return;
+    videos.insert(to, videos.removeAt(from));
+    await _save(_withVideos(categoryId, videos));
+  }
+
+  /// 换掉一条视频的字段（隐藏 / 放出走这里）。视频或分类已经不在了就当没这回事。
+  Future<void> _updateVideo(
+    String categoryId,
+    String videoId,
+    VideoItem Function(VideoItem) change,
+  ) async {
+    final category = state.byId(categoryId);
+    if (category == null) return;
+    if (!category.videos.any((v) => v.id == videoId)) return;
+    await _save(_withVideos(categoryId, [
+      for (final v in category.videos) v.id == videoId ? change(v) : v,
+    ]));
+  }
+
+  /// 复制一份库，把 [categoryId] 的视频列表换成 [videos]。
+  VideoLibrary _withVideos(String categoryId, List<VideoItem> videos) =>
+      VideoLibrary(categories: [
+        for (final c in state.categories)
+          c.id == categoryId ? c.copyWith(videos: videos) : c,
+      ]);
 }
 
 final videoLibraryProvider =

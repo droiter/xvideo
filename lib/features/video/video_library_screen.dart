@@ -29,7 +29,8 @@ class VideoLibraryScreen extends ConsumerWidget {
           Text(
             lib.isEmpty
                 ? '视频分类在「我的 → 我的视频」里添加'
-                : '共 ${lib.categories.length} 个分类 · ${lib.totalVideos} 个视频',
+                // 家长藏起来的那些不报数：孩子连数都对不上，才看不出被收走了。
+                : '共 ${lib.categories.length} 个分类 · ${lib.visibleCount} 个视频',
             style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 16),
@@ -142,7 +143,8 @@ class _CategoryCard extends ConsumerWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${category.videos.length} 个视频',
+                  // 同上：卡片上也只算孩子看得到的。
+                  '${category.visibleVideos.length} 个视频',
                   style: TextStyle(
                       color: Colors.white.withOpacity(0.85), fontSize: 12),
                 ),

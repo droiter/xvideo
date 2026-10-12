@@ -29,6 +29,15 @@ Map<String, Object> _seed({bool dark = false, bool loggedIn = true}) => {
 int _tabIndex(WidgetTester tester) =>
     tester.widget<IndexedStack>(find.byType(IndexedStack).first).index!;
 
+/// 「我的」页内容一屏放不下（最底下那张卡在 600 高的默认视口里会被 ListView
+/// 懒加载挡住），要连着看底下几项的用例按平板尺寸跑。
+void _useTablet(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1024, 1600);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+}
+
 void main() {
   testWidgets('首次启动看引导页，跳过就进主界面，不用先登录', (tester) async {
     await tester.pumpWidget(await _app());
@@ -58,6 +67,7 @@ void main() {
   });
 
   testWidgets('未登录时「我的」有登录入口，注册完回到「我的」显示账号', (tester) async {
+    _useTablet(tester);
     await tester.pumpWidget(await _app(seed: _seed(loggedIn: false)));
     await tester.tap(find.byKey(const ValueKey('tab-1')));
     await tester.pumpAndSettle();
@@ -101,6 +111,7 @@ void main() {
   });
 
   testWidgets('退出登录后还在主界面，账号卡变回未登录', (tester) async {
+    _useTablet(tester);
     await tester.pumpWidget(await _app(seed: _seed()));
     await tester.tap(find.byKey(const ValueKey('tab-1')));
     await tester.pumpAndSettle();
@@ -116,6 +127,7 @@ void main() {
   });
 
   testWidgets('「我的」里有账号、我的视频、深色模式，没有课程那套设置', (tester) async {
+    _useTablet(tester);
     await tester.pumpWidget(await _app(seed: _seed()));
 
     await tester.tap(find.byKey(const ValueKey('tab-1')));

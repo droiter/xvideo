@@ -38,6 +38,12 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   void initState() {
     super.initState();
     _loop = ref.read(prefsProvider).getBool(kVideoLoopKey) ?? false;
+    // 防反复观看：打开播放页就算看过一遍。记到下一帧再动手——这一帧还在建
+    // 新路由，直接改 provider 会把底下的视频列表标记成要重建。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(viewLimitProvider.notifier).recordView(widget.video.id);
+    });
     _init();
   }
 

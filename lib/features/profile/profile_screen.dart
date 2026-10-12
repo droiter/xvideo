@@ -6,6 +6,7 @@ import '../../core/theme.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../auth/login_screen.dart';
+import '../shell/parent_password.dart';
 import '../video/video_manage_screen.dart';
 
 /// 「我的」：账号、视频管理、设置、关于、退出。
@@ -16,6 +17,7 @@ class ProfileScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authControllerProvider.select((s) => s.user));
     final dark = ref.watch(themeControllerProvider);
+    final limit = ref.watch(viewLimitSettingsProvider);
     final lib = ref.watch(videoLibraryProvider);
     final scheme = Theme.of(context).colorScheme;
 
@@ -59,6 +61,56 @@ class ProfileScreen extends ConsumerWidget {
                   value: dark,
                   onChanged: (v) =>
                       ref.read(themeControllerProvider.notifier).setDark(v),
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.hourglass_top_rounded),
+                  title: const Text('限制反复观看'),
+                  subtitle: Text(limit.enabled
+                      ? '同一个视频连看 ${limit.maxViews} 遍就锁 ${limit.lockMinutes} 分钟'
+                      : '关着：同一个视频想看几遍看几遍'),
+                  value: limit.enabled,
+                  onChanged: (v) => ref
+                      .read(viewLimitSettingsProvider.notifier)
+                      .setEnabled(v),
+                ),
+                if (limit.enabled) ...[
+                  ListTile(
+                    leading: const Icon(Icons.repeat_rounded),
+                    title: const Text('连看几遍就锁住'),
+                    trailing: Text('${limit.maxViews} 遍'),
+                    onTap: () => _pickSetting(
+                      context,
+                      title: '连着看几遍就锁住',
+                      unit: '遍',
+                      options: kViewLimitChoices,
+                      current: limit.maxViews,
+                      onPicked: (v) => ref
+                          .read(viewLimitSettingsProvider.notifier)
+                          .setMaxViews(v),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.timer_outlined),
+                    title: const Text('锁住多久'),
+                    trailing: Text('${limit.lockMinutes} 分钟'),
+                    onTap: () => _pickSetting(
+                      context,
+                      title: '锁住多久',
+                      unit: '分钟',
+                      options: kLockMinuteChoices,
+                      current: limit.lockMinutes,
+                      onPicked: (v) => ref
+                          .read(viewLimitSettingsProvider.notifier)
+                          .setLockMinutes(v),
+                    ),
+                  ),
+                ],
+                ListTile(
+                  leading: const Icon(Icons.lock_outline_rounded),
+                  title: const Text('家长密码'),
+                  subtitle: const Text('隐藏视频、调整顺序时要输它'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => showChangeParentPassword(context),
                 ),
                 ListTile(
                   leading: const Icon(Icons.info_outline_rounded),
@@ -203,6 +255,33 @@ class ProfileScreen extends ConsumerWidget {
       await ref.read(authControllerProvider.notifier).logout();
     }
   }
+}
+
+/// 让家长从几个常用数字里挑一个：手打数字容易多打或少打，给一排选。
+Future<void> _pickSetting(
+  BuildContext context, {
+  required String title,
+  required String unit,
+  required List<int> options,
+  required int current,
+  required ValueChanged<int> onPicked,
+}) async {
+  final picked = await showDialog<int>(
+    context: context,
+    builder: (ctx) => SimpleDialog(
+      title: Text(title),
+      children: [
+        for (final v in options)
+          ListTile(
+            title: Text('$v $unit'),
+            selected: v == current,
+            trailing: v == current ? const Icon(Icons.check_rounded) : null,
+            onTap: () => Navigator.pop(ctx, v),
+          ),
+      ],
+    ),
+  );
+  if (picked != null) onPicked(picked);
 }
 
 class _SectionLabel extends StatelessWidget {

@@ -105,7 +105,10 @@ class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w800)),
-                      Text('${c.videos.length} 个视频',
+                      // 这里是家长在管，报的是真数：藏起来的也数上，另标一句。
+                      Text(
+                          '${c.videos.length} 个视频'
+                          '${c.hiddenCount > 0 ? ' · 已隐藏 ${c.hiddenCount} 个' : ''}',
                           style: TextStyle(
                               fontSize: 12, color: scheme.onSurfaceVariant)),
                     ],
@@ -146,10 +149,31 @@ class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
                     placeholderIcon: _kindIcon(v),
                     badgeIcon: _kindIcon(v),
                   ),
-                  title: Text(v.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 14)),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: Text(v.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14)),
+                      ),
+                      if (v.hidden) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: scheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: Text('已隐藏',
+                              style: TextStyle(
+                                  fontSize: 10.5,
+                                  color: scheme.onSurfaceVariant)),
+                        ),
+                      ],
+                    ],
+                  ),
                   trailing: IconButton(
                     tooltip: '删除视频',
                     icon: Icon(Icons.close_rounded,
