@@ -16,6 +16,19 @@ const String kDarkModeKey = 'xvideo_dark';
 /// 播放页的「循环播放」开关。全机共用一份，下次进播放页照旧。
 const String kVideoLoopKey = 'xvideo_video_loop';
 
+/// 播放页的静音开关。全机共用一份，下次进播放页照旧。
+const String kVideoMuteKey = 'xvideo_video_mute';
+
+/// 每个视频看到哪儿（毫秒），键是 `xvideo_video_pos_<视频 id>`。
+/// 单独一条一条存，删视频时不用管整张表。
+const String kVideoPositionPrefix = 'xvideo_video_pos_';
+
+/// 开头这几秒不记（下次从头看，几秒重看无所谓）。
+const int kVideoResumeMinMs = 3000;
+
+/// 播放中每隔这么久记一次，进程被杀也不至于从头再来。
+const int kVideoResumeSaveStepMs = 5000;
+
 /// 视频库：分类 + 视频。全机共用一份（家长加片，孩子看）。
 const String kVideoLibraryKey = 'xvideo_video_lib';
 

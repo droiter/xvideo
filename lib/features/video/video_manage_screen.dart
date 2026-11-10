@@ -15,6 +15,10 @@ class VideoManageScreen extends ConsumerStatefulWidget {
 }
 
 class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
+  /// 每个分类先摆几个视频：缺省一页 10 个，点「还有 N 个」再多摆一页。
+  static const int _pageSize = 10;
+  final Map<String, int> _shown = {};
+
   VideoLibraryController get _lib => ref.read(videoLibraryProvider.notifier);
 
   VideoThumbCache get _thumbs => ref.read(videoThumbCacheProvider);
@@ -85,6 +89,9 @@ class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
 
   Widget _categoryCard(VideoCategory c) {
     final scheme = Theme.of(context).colorScheme;
+    final shown = _shown[c.id] ?? _pageSize;
+    final listed = c.videos.take(shown).toList();
+    final remain = c.videos.length - listed.length;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -134,8 +141,8 @@ class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
                     style: TextStyle(
                         fontSize: 12.5, color: scheme.onSurfaceVariant)),
               )
-            else
-              for (final v in c.videos)
+            else ...[
+              for (final v in listed)
                 ListTile(
                   dense: true,
                   contentPadding: const EdgeInsets.only(left: 30, right: 4),
@@ -181,6 +188,20 @@ class _VideoManageScreenState extends ConsumerState<VideoManageScreen> {
                     onPressed: () => _deleteVideo(c, v),
                   ),
                 ),
+              if (remain > 0)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () =>
+                        setState(() => _shown[c.id] = shown + _pageSize),
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                        size: 20),
+                    label: Text(remain > _pageSize
+                        ? '还有 $remain 个，再显示 $_pageSize 个'
+                        : '还有 $remain 个，全部展开'),
+                  ),
+                ),
+            ],
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(

@@ -379,6 +379,42 @@ void main() {
       expect(find.text('1 个视频'), findsOneWidget);
     });
 
+    testWidgets('分类里视频多了先摆 10 个，点箭头再摆 10 个', (tester) async {
+      final many = jsonEncode({
+        'categories': [
+          {
+            'id': 'vc1',
+            'name': '动画片',
+            'videos': [
+              for (var i = 1; i <= 12; i++)
+                {
+                  'id': 'v$i',
+                  'title': '视频 $i',
+                  'source': 'https://example.com/$i.mp4',
+                  'kind': 'link',
+                },
+            ],
+          },
+        ],
+      });
+      await tester.pumpWidget(
+          await _host(const VideoManageScreen(), seed: {kVideoLibraryKey: many}));
+      await tester.pump();
+
+      expect(find.text('视频 10'), findsOneWidget);
+      expect(find.text('视频 11'), findsNothing);
+      expect(find.text('还有 2 个，全部展开'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('还有 2 个，全部展开'));
+      await tester.pump();
+      await tester.tap(find.text('还有 2 个，全部展开'));
+      await _settle(tester);
+
+      expect(find.text('视频 11'), findsOneWidget);
+      expect(find.text('视频 12'), findsOneWidget);
+      expect(find.textContaining('再显示'), findsNothing);
+    });
+
     testWidgets('链接格式不对时不给加', (tester) async {
       await tester.pumpWidget(
           await _host(const VideoManageScreen(), seed: {kVideoLibraryKey: _seedLibraryJson()}));

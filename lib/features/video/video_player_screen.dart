@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../core/constants.dart';
@@ -31,13 +32,24 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   /// 循环播放开关，跟着上一次的选择走。
   bool _loop = false;
 
+  /// 静音开关，也跟着上一次的选择走。
+  bool _muted = false;
+
   /// 这一轮播完已经绕回去过了；等画面真的重新走起来再放行下一次。
   bool _restartedLoop = false;
+
+  late final SharedPreferences _prefs = ref.read(prefsProvider);
+
+  /// 上次落盘的位置（毫秒），用来避免每 500 毫秒都写一遍。
+  int _lastSavedMs = 0;
+
+  String get _posKey => '$kVideoPositionPrefix${widget.video.id}';
 
   @override
   void initState() {
     super.initState();
-    _loop = ref.read(prefsProvider).getBool(kVideoLoopKey) ?? false;
+    _loop = _prefs.getBool(kVideoLoopKey) ?? false;
+    _muted = _prefs.getBool(kVideoMuteKey) ?? false;
     // 防反复观看：打开播放页就算看过一遍。记到下一帧再动手——这一帧还在建
     // 新路由，直接改 provider 会把底下的视频列表标记成要重建。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -58,6 +70,10 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
       if (!mounted) return;
       // 循环交给播放器自己做：到头不回退、不黑一下。
       await controller.setLooping(_loop);
+      if (!mounted) return;
+      await controller.setVolume(_muted ? 0 : 1);
+      if (!mounted) return;
+      await _resumeFromLastStop(controller);
       if (!mounted) return;
       setState(() {});
       // 挂在播放器上而不是写在 build 里：build 期间动导航栈会直接断言失败。
@@ -82,22 +98,62 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     await _init();
   }
 
+  /// 从上次停下的地方接着放。离结尾不到 1 秒的当作看完了，从头来。
+  Future<void> _resumeFromLastStop(VideoPlayerController c) async {
+    final saved = _prefs.getInt(_posKey) ?? 0;
+    _lastSavedMs = saved;
+    final total = c.value.duration.inMilliseconds;
+    if (saved < kVideoResumeMinMs || total <= 0) return;
+    if (saved >= total - 1000) {
+      _clearPosition();
+      return;
+    }
+    await c.seekTo(Duration(milliseconds: saved));
+  }
+
+  /// 顺手记下看到哪儿了。每 [kVideoResumeSaveStepMs] 写一次就够，
+  /// 别跟着播放器每 500 毫秒的进度回调一直写盘。
+  void _rememberPosition(VideoPlayerValue v) {
+    if (!v.isInitialized) return;
+    final ms = v.position.inMilliseconds;
+    if (ms < kVideoResumeMinMs) {
+      // 刚开头（或者被拖回开头）就不值得记，下次从头看也一样。
+      if (_lastSavedMs != 0) {
+        _lastSavedMs = 0;
+        _prefs.remove(_posKey);
+      }
+      return;
+    }
+    if ((ms - _lastSavedMs).abs() < kVideoResumeSaveStepMs) return;
+    _lastSavedMs = ms;
+    _prefs.setInt(_posKey, ms);
+  }
+
+  void _clearPosition() {
+    _lastSavedMs = 0;
+    _prefs.remove(_posKey);
+  }
+
   /// 放完就退回视频列表；开着循环就从头再来。
   void _onPlaybackChanged() {
     final c = _controller;
     if (c == null || !mounted || _leftAfterEnd) return;
     if (!c.value.isCompleted) {
       _restartedLoop = false;
+      _rememberPosition(c.value);
       return;
     }
     if (_loop) {
       // 一般让播放器自己接上（setLooping），这里兜住那些仍然报「播完」的机型。
       if (_restartedLoop) return;
       _restartedLoop = true;
+      _clearPosition();
       c.seekTo(Duration.zero);
       c.play();
       return;
     }
+    // 看完了就把位置清掉，下次进这个视频从头放。
+    _clearPosition();
     // 先按住声音再退，不然退出去的瞬间还响着。
     c.pause();
     _leftAfterEnd = true;
@@ -108,7 +164,14 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   void _toggleLoop() {
     setState(() => _loop = !_loop);
     _controller?.setLooping(_loop);
-    ref.read(prefsProvider).setBool(kVideoLoopKey, _loop);
+    _prefs.setBool(kVideoLoopKey, _loop);
+  }
+
+  /// 开关静音，并记住这次的选择。
+  void _toggleMute() {
+    setState(() => _muted = !_muted);
+    _controller?.setVolume(_muted ? 0 : 1);
+    _prefs.setBool(kVideoMuteKey, _muted);
   }
 
   /// 点画面只用来「接着播」。
@@ -124,7 +187,16 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    // 退出时把停下的地方记下来：没看完的下次接着看，看完了的已经在
+    // _onPlaybackChanged 里清掉了。
+    final c = _controller;
+    if (c != null && c.value.isInitialized && !c.value.isCompleted) {
+      final ms = c.value.position.inMilliseconds;
+      if (ms >= kVideoResumeMinMs) {
+        _prefs.setInt(_posKey, ms);
+      }
+    }
+    c?.dispose();
     super.dispose();
   }
 
@@ -190,91 +262,86 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
             behavior: HitTestBehavior.opaque,
             onTap: _resumeByTouch,
           ),
-          ValueListenableBuilder<VideoPlayerValue>(
-            valueListenable: c,
-            builder: (context, value, _) => value.isPlaying
-                ? const SizedBox.shrink()
-                // 正中这个圆钮是「指示」，不是按钮：不吃点击，
-                // 点它和点画面别处一样，都交给下面那层 GestureDetector。
-                : IgnorePointer(
-                    child: Center(
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.45),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          value.isCompleted
-                              ? Icons.replay_rounded
-                              : Icons.play_arrow_rounded,
-                          color: Colors.white,
-                          size: 44,
-                        ),
-                      ),
-                    ),
-                  ),
-          ),
         ],
       ),
+      // 播放键、进度条、循环、静音都挤在同一行：竖屏视频底下能少占一行高度。
       controls: ValueListenableBuilder<VideoPlayerValue>(
         valueListenable: c,
-        builder: (context, value, _) => Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                IconButton(
-                  onPressed: _togglePlay,
-                  icon: Icon(
-                    value.isPlaying
-                        ? Icons.pause_rounded
-                        : Icons.play_arrow_rounded,
-                    color: Colors.white,
+        builder: (context, value, _) => Padding(
+          padding: const EdgeInsets.fromLTRB(2, 2, 6, 2),
+          child: Row(
+            children: [
+              IconButton(
+                onPressed: _togglePlay,
+                tooltip: value.isPlaying ? '暂停' : '播放',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+                icon: Icon(
+                  value.isPlaying
+                      ? Icons.pause_rounded
+                      : Icons.play_arrow_rounded,
+                  color: Colors.white,
+                ),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderTheme.of(context).copyWith(
+                    trackHeight: 2.5,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    overlayShape:
+                        const RoundSliderOverlayShape(overlayRadius: 12),
                   ),
-                  tooltip: value.isPlaying ? '暂停' : '播放',
-                ),
-                Text(
-                  '${_fmt(value.position)} / ${_fmt(value.duration)}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
-                ),
-                const Spacer(),
-                // 开着的时候按钮亮起来，一眼能看出现在是不是在循环。
-                TextButton.icon(
-                  onPressed: _toggleLoop,
-                  icon: const Icon(Icons.repeat_rounded, size: 18),
-                  label: const Text('循环'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: _loop ? Colors.white : Colors.white38,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    minimumSize: const Size(0, 36),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    textStyle: const TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: Slider(
+                    value: _sliderValue(value),
+                    onChanged: (v) => c.seekTo(Duration(
+                        milliseconds:
+                            (v * value.duration.inMilliseconds).round())),
+                    activeColor: Colors.white,
+                    inactiveColor: Colors.white24,
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.only(right: 14),
-                  child: Text(
-                    widget.video.isLocal ? '本机视频' : '网络视频',
-                    style: const TextStyle(color: Colors.white38, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-            Slider(
-              value: _sliderValue(value),
-              onChanged: (v) => c.seekTo(
-                  Duration(milliseconds: (v * value.duration.inMilliseconds).round())),
-              activeColor: Colors.white,
-              inactiveColor: Colors.white24,
-            ),
-          ],
+              ),
+              Text(
+                '${_fmt(value.position)} / ${_fmt(value.duration)}',
+                style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+              ),
+              const SizedBox(width: 4),
+              // 开着的时候按钮亮起来，一眼能看出现在是不是在循环 / 静音。
+              _controlIcon(
+                icon: Icons.repeat_rounded,
+                active: _loop,
+                tooltip: _loop ? '关闭循环播放' : '循环播放',
+                onPressed: _toggleLoop,
+              ),
+              _controlIcon(
+                icon: _muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                active: _muted,
+                tooltip: _muted ? '取消静音' : '静音',
+                onPressed: _toggleMute,
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  /// 控制条右边的小圆钮：循环 / 静音共用，亮着表示开着。
+  Widget _controlIcon({
+    required IconData icon,
+    required bool active,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return IconButton(
+      onPressed: onPressed,
+      tooltip: tooltip,
+      iconSize: 21,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+      icon: Icon(icon, color: active ? Colors.white : Colors.white38),
     );
   }
 

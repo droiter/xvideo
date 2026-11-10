@@ -23,6 +23,7 @@ class _FakePlayer extends VideoPlayerPlatform {
   StreamController<VideoEvent>? _events;
   bool isPlaying = false;
   bool looping = false;
+  double volume = 1;
   Duration position = Duration.zero;
   final Duration total = const Duration(seconds: 30);
 
@@ -49,7 +50,10 @@ class _FakePlayer extends VideoPlayerPlatform {
   }
 
   @override
-  Future<void> setVolume(int playerId, double volume) async {}
+  Future<void> setVolume(int playerId, double volume) async {
+    this.volume = volume;
+    calls.add('volume:${volume.toStringAsFixed(0)}');
+  }
 
   @override
   Future<void> setPlaybackSpeed(int playerId, double speed) async {}
@@ -161,7 +165,7 @@ Future<_FakePlayer> _openPlayer(WidgetTester tester) async {
   return fake;
 }
 
-/// 摸一下画面正中——中间那个播放圆钮待的地方。
+/// 摸一下画面正中——暂停后要接着播的地方。
 Future<void> _touchStage(WidgetTester tester) async {
   await tester.tapAt(tester.getRect(find.byType(VideoPlayer)).center);
   await tester.pump();
@@ -189,7 +193,7 @@ void main() {
   testWidgets('开循环后播完从头再来，关掉后照旧退回列表', (tester) async {
     final fake = await _openPlayer(tester);
 
-    await tester.tap(find.text('循环'));
+    await tester.tap(find.byIcon(Icons.repeat_rounded));
     await _settle(tester);
     expect(fake.looping, isTrue);
 
@@ -202,7 +206,7 @@ void main() {
     expect(fake.calls, contains('seek'));
     expect(fake.isPlaying, isTrue);
 
-    await tester.tap(find.text('循环'));
+    await tester.tap(find.byIcon(Icons.repeat_rounded));
     await _settle(tester);
     expect(fake.looping, isFalse);
 
@@ -216,7 +220,7 @@ void main() {
     final fake = await _openPlayer(tester);
     expect(fake.looping, isFalse);
 
-    await tester.tap(find.text('循环'));
+    await tester.tap(find.byIcon(Icons.repeat_rounded));
     await _settle(tester);
     expect(fake.looping, isTrue);
 
@@ -234,7 +238,7 @@ void main() {
     await _tearDownTree(tester);
   });
 
-  testWidgets('窄屏手机上多出来的循环按钮也不会把控制条挤出屏幕', (tester) async {
+  testWidgets('窄屏手机上循环键和静音键同一行也挤得下', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -242,8 +246,11 @@ void main() {
 
     await _openPlayer(tester);
 
-    expect(tester.getRect(find.text('循环')).right, lessThanOrEqualTo(360));
-    expect(tester.getRect(find.text('网络视频')).right, lessThanOrEqualTo(360));
+    expect(tester.getRect(find.byIcon(Icons.repeat_rounded)).right,
+        lessThanOrEqualTo(360));
+    expect(tester.getRect(find.byIcon(Icons.volume_up_rounded)).right,
+        lessThanOrEqualTo(360));
+    expect(find.byType(Slider), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await _tearDownTree(tester);
@@ -275,6 +282,69 @@ void main() {
     await _settle(tester);
 
     expect(fake.isPlaying, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('暂停时画面中间不再压一个大播放三角', (tester) async {
+    final fake = await _openPlayer(tester);
+
+    await tester.tap(find.byIcon(Icons.pause_rounded));
+    await _settle(tester);
+    expect(fake.isPlaying, isFalse);
+
+    // 控制条上那颗播放键还在，画面里那第二颗大图标没了。
+    final play = find.byIcon(Icons.play_arrow_rounded);
+    expect(play, findsOneWidget);
+    expect(
+      tester.getRect(find.byType(VideoPlayer)).contains(
+            tester.getRect(play).center,
+          ),
+      isFalse,
+      reason: '剩下的播放键应该在控制条里，不在画面上',
+    );
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('退出时记住看的位置，下次点进来接着播', (tester) async {
+    final fake = await _openPlayer(tester);
+
+    // 播到 12 秒，播放器每 500 毫秒回一次进度。
+    fake.position = const Duration(seconds: 12);
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump();
+
+    await tester.pageBack();
+    await _settle(tester);
+    expect(find.byType(VideoPlayerScreen), findsNothing);
+
+    fake.calls.clear();
+    await tester.tap(find.text('小猪佩奇 第 1 集'));
+    await _settle(tester);
+    fake.ready();
+    await _settle(tester);
+
+    expect(find.byType(VideoPlayerScreen), findsOneWidget);
+    expect(fake.calls, contains('seek'));
+    expect(fake.position, const Duration(seconds: 12));
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('静音键关掉声音，再按一下恢复', (tester) async {
+    final fake = await _openPlayer(tester);
+    expect(fake.volume, 1);
+
+    await tester.tap(find.byIcon(Icons.volume_up_rounded));
+    await _settle(tester);
+    expect(fake.volume, 0);
+    expect(find.byIcon(Icons.volume_off_rounded), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.volume_off_rounded));
+    await _settle(tester);
+    expect(fake.volume, 1);
+    expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
 
     await _tearDownTree(tester);
   });
