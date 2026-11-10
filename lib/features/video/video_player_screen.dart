@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -14,9 +15,18 @@ import '../../state/providers.dart';
 /// 不弹家长验证，也不受播放进度影响。放完则自动退回视频列表，
 /// 除非打开了控制条上的「循环播放」——那就从头再来一遍。
 class VideoPlayerScreen extends ConsumerStatefulWidget {
-  const VideoPlayerScreen({super.key, required this.video});
+  const VideoPlayerScreen({
+    super.key,
+    required this.video,
+    this.playlist = const [],
+  });
 
   final VideoItem video;
+
+  /// 同一个列表里的全部视频（按显示顺序）。
+  ///
+  /// 传进来才能在开着手势控制时左右划换片；不传就只播 [video] 一个。
+  final List<VideoItem> playlist;
 
   @override
   ConsumerState<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
@@ -35,6 +45,9 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   /// 静音开关，也跟着上一次的选择走。
   bool _muted = false;
 
+  /// 点画面 / 左右划这套手势开不开（「我的 → 偏好设置」里改）。
+  bool _touchControl = false;
+
   /// 这一轮播完已经绕回去过了；等画面真的重新走起来再放行下一次。
   bool _restartedLoop = false;
 
@@ -43,44 +56,66 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   /// 上次落盘的位置（毫秒），用来避免每 500 毫秒都写一遍。
   int _lastSavedMs = 0;
 
-  String get _posKey => '$kVideoPositionPrefix${widget.video.id}';
+  /// 当前播的是 [VideoPlayerScreen.playlist] 里的第几个；
+  /// 没传 playlist 时就只有自己一个。
+  late final List<VideoItem> _playlist;
+  late int _index;
+
+  /// 快速连划时，把上一轮还没 init 完的加载作废。
+  int _loadToken = 0;
+
+  /// 这一下横向拖了多远（右正左负）。
+  double _dragDx = 0;
+
+  VideoItem get _video => _playlist[_index];
+
+  String get _posKey => '$kVideoPositionPrefix${_video.id}';
 
   @override
   void initState() {
     super.initState();
+    final i = widget.playlist.indexWhere((v) => v.id == widget.video.id);
+    _playlist = i >= 0 ? widget.playlist : [widget.video];
+    _index = i >= 0 ? i : 0;
     _loop = _prefs.getBool(kVideoLoopKey) ?? false;
     _muted = _prefs.getBool(kVideoMuteKey) ?? false;
+    _touchControl = ref.read(touchControlProvider);
     // 防反复观看：打开播放页就算看过一遍。记到下一帧再动手——这一帧还在建
     // 新路由，直接改 provider 会把底下的视频列表标记成要重建。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(viewLimitProvider.notifier).recordView(widget.video.id);
-    });
+    _recordView(_video.id);
     _init();
   }
 
+  void _recordView(String videoId) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(viewLimitProvider.notifier).recordView(videoId);
+    });
+  }
+
   Future<void> _init() async {
-    final item = widget.video;
+    final token = ++_loadToken;
+    final item = _video;
     final controller = item.isLocal
         ? VideoPlayerController.file(File(item.source))
         : VideoPlayerController.networkUrl(Uri.parse(item.source));
     _controller = controller;
     try {
       await controller.initialize();
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       // 循环交给播放器自己做：到头不回退、不黑一下。
       await controller.setLooping(_loop);
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       await controller.setVolume(_muted ? 0 : 1);
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       await _resumeFromLastStop(controller);
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       setState(() {});
       // 挂在播放器上而不是写在 build 里：build 期间动导航栈会直接断言失败。
-      controller.addListener(_onPlaybackChanged);
+      controller.addListener(() => _onPlaybackChanged(controller));
       await controller.play();
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || token != _loadToken) return;
       setState(() => _error = item.isLocal
           ? '这个视频文件打不开了\n可能已被删除，请重新添加'
           : '视频暂时无法播放\n请检查网络后重试');
@@ -135,9 +170,9 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   }
 
   /// 放完就退回视频列表；开着循环就从头再来。
-  void _onPlaybackChanged() {
-    final c = _controller;
-    if (c == null || !mounted || _leftAfterEnd) return;
+  void _onPlaybackChanged(VideoPlayerController c) {
+    // 换片时旧播放器还没 dispose 完，它的回调别拿新播放器的状态说事。
+    if (!identical(c, _controller) || !mounted || _leftAfterEnd) return;
     if (!c.value.isCompleted) {
       _restartedLoop = false;
       _rememberPosition(c.value);
@@ -174,7 +209,16 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     _prefs.setBool(kVideoMuteKey, _muted);
   }
 
-  /// 点画面只用来「接着播」。
+  /// 点画面：开着手势控制就暂停 / 继续，关着只用来「接着播」。
+  void _onTapStage() {
+    if (_touchControl) {
+      _togglePlay();
+      return;
+    }
+    _resumeByTouch();
+  }
+
+  /// 没开手势控制时的老行为：点画面只接着播。
   ///
   /// 播放中碰到画面**不暂停**：小孩看视频手总在屏幕上摸，一按画面就断了；
   /// 要暂停请用下面的控制条。
@@ -185,18 +229,77 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     c.play();
   }
 
+  void _onDragStart(DragStartDetails _) => _dragDx = 0;
+
+  void _onDragUpdate(DragUpdateDetails d) => _dragDx += d.delta.dx;
+
+  /// 左划上一个、右划下一个（主人定的方向）。划得太短不算。
+  void _onDragEnd(DragEndDetails _) {
+    final dx = _dragDx;
+    _dragDx = 0;
+    if (!_touchControl || dx.abs() < _kSwipeMinDx) return;
+    if (dx < 0) {
+      _index > 0 ? _goTo(_index - 1) : _toast('已经是第一个视频了');
+    } else {
+      _index < _playlist.length - 1
+          ? _goTo(_index + 1)
+          : _toast('已经是最后一个视频了');
+    }
+  }
+
+  /// 换到列表里的第 [index] 个视频，在这一页里直接换，不另开路由。
+  Future<void> _goTo(int index) async {
+    if (index < 0 || index >= _playlist.length) return;
+    final target = _playlist[index];
+    // 锁着的视频跟列表里一样不给看，也不能靠划过去绕开。
+    final minutes = ref.read(viewLimitProvider.notifier).minutesLeft(target.id);
+    if (minutes > 0) {
+      _toast('「${target.title}」还要等 $minutes 分钟才能看');
+      return;
+    }
+
+    final old = _controller;
+    // 先把这一部的位置记下来，再换片。
+    _savePosition(old);
+    setState(() {
+      _index = index;
+      _controller = null;
+      _error = null;
+      _leftAfterEnd = false;
+      _restartedLoop = false;
+    });
+    _lastSavedMs = 0;
+    // 旧播放器让它自己回收，不 await：有些平台实现 dispose 的 Future 迟迟
+    // 不回来，卡在这儿就换不了片。
+    unawaited(old?.dispose());
+    if (!mounted) return;
+    _recordView(target.id);
+    await _init();
+  }
+
+  /// 记下当前视频看到哪儿了；刚开头（或已经看完）就不记。
+  void _savePosition(VideoPlayerController? c) {
+    if (c == null || !c.value.isInitialized || c.value.isCompleted) return;
+    final ms = c.value.position.inMilliseconds;
+    if (ms < kVideoResumeMinMs) return;
+    _prefs.setInt(_posKey, ms);
+  }
+
+  void _toast(String text) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(text),
+        duration: const Duration(seconds: 2),
+      ));
+  }
+
   @override
   void dispose() {
     // 退出时把停下的地方记下来：没看完的下次接着看，看完了的已经在
     // _onPlaybackChanged 里清掉了。
-    final c = _controller;
-    if (c != null && c.value.isInitialized && !c.value.isCompleted) {
-      final ms = c.value.position.inMilliseconds;
-      if (ms >= kVideoResumeMinMs) {
-        _prefs.setInt(_posKey, ms);
-      }
-    }
-    c?.dispose();
+    _savePosition(_controller);
+    _controller?.dispose();
     super.dispose();
   }
 
@@ -210,7 +313,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         title: Text(
-          widget.video.title,
+          _video.title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.w700),
@@ -253,17 +356,12 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   Widget _playerView(VideoPlayerController c) {
     return PlayerStage(
       aspectRatio: c.value.aspectRatio,
-      video: Stack(
-        fit: StackFit.expand,
-        children: [
-          VideoPlayer(c),
-          // 点画面任意位置接着播（播放中点它不做任何事）。
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _resumeByTouch,
-          ),
-        ],
-      ),
+      video: VideoPlayer(c),
+      // 手势盖在画面那块（含上下黑边）上：控制条里的按钮和进度条照旧归它们自己。
+      onTap: _onTapStage,
+      onHorizontalDragStart: _touchControl ? _onDragStart : null,
+      onHorizontalDragUpdate: _touchControl ? _onDragUpdate : null,
+      onHorizontalDragEnd: _touchControl ? _onDragEnd : null,
       // 播放键、进度条、循环、静音都挤在同一行：竖屏视频底下能少占一行高度。
       controls: ValueListenableBuilder<VideoPlayerValue>(
         valueListenable: c,
@@ -369,6 +467,9 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   }
 }
 
+/// 左右划至少这么远才算换片（防手抖）。
+const double _kSwipeMinDx = 56;
+
 /// 播放画面 + 控制条。
 ///
 /// 画面只吃剩下的高度：竖屏（或平板上的）视频比屏幕还高，早先按宽度撑高的写法
@@ -379,6 +480,10 @@ class PlayerStage extends StatelessWidget {
     required this.aspectRatio,
     required this.video,
     required this.controls,
+    this.onTap,
+    this.onHorizontalDragStart,
+    this.onHorizontalDragUpdate,
+    this.onHorizontalDragEnd,
   });
 
   /// 视频宽高比；拿不到时按 16:9 算。
@@ -386,15 +491,28 @@ class PlayerStage extends StatelessWidget {
   final Widget video;
   final Widget controls;
 
+  /// 画面那一块的轻点 / 左右划。控制条不在里面，免得跟进度条抢手势。
+  final GestureTapCallback? onTap;
+  final GestureDragStartCallback? onHorizontalDragStart;
+  final GestureDragUpdateCallback? onHorizontalDragUpdate;
+  final GestureDragEndCallback? onHorizontalDragEnd;
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
-          child: Center(
-            child: AspectRatio(
-              aspectRatio: aspectRatio <= 0 ? 16 / 9 : aspectRatio,
-              child: video,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            onHorizontalDragStart: onHorizontalDragStart,
+            onHorizontalDragUpdate: onHorizontalDragUpdate,
+            onHorizontalDragEnd: onHorizontalDragEnd,
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: aspectRatio <= 0 ? 16 / 9 : aspectRatio,
+                child: video,
+              ),
             ),
           ),
         ),

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 import 'package:xvideo/core/constants.dart';
+import 'package:xvideo/features/profile/profile_screen.dart';
 import 'package:xvideo/features/video/video_category_screen.dart';
 import 'package:xvideo/features/video/video_player_screen.dart';
 import 'package:xvideo/state/providers.dart';
@@ -21,6 +22,9 @@ class _FakePlayer extends VideoPlayerPlatform {
   final List<String> calls = <String>[];
 
   StreamController<VideoEvent>? _events;
+
+  /// 新播放器还没接上事件通道时就喊了 ready()，等接上再补发。
+  bool _readyPending = false;
   bool isPlaying = false;
   bool looping = false;
   double volume = 1;
@@ -38,7 +42,15 @@ class _FakePlayer extends VideoPlayerPlatform {
 
   @override
   Stream<VideoEvent> videoEventsFor(int playerId) {
-    final events = StreamController<VideoEvent>();
+    // 和真机的 receiveBroadcastStream 一样用广播流：单订阅流在测试里
+    // cancel() 的 Future 迟迟不完成，换片时 await 旧播放器的 dispose 会卡住。
+    late final StreamController<VideoEvent> events;
+    events = StreamController<VideoEvent>.broadcast(onListen: () {
+      if (_readyPending && identical(_events, events)) {
+        _readyPending = false;
+        _addInitialized();
+      }
+    });
     _events = events;
     return events.stream;
   }
@@ -89,12 +101,21 @@ class _FakePlayer extends VideoPlayerPlatform {
   @override
   Widget buildView(int playerId) => const SizedBox.expand();
 
-  /// 第一帧就绪，对应真机上那个 `initialized` 事件。
-  void ready() => _events!.add(VideoEvent(
+  void _addInitialized() => _events!.add(VideoEvent(
         eventType: VideoEventType.initialized,
         duration: total,
         size: const Size(1280, 720),
       ));
+
+  /// 第一帧就绪，对应真机上那个 `initialized` 事件。
+  void ready() {
+    final events = _events;
+    if (events == null || !events.hasListener) {
+      _readyPending = true;
+      return;
+    }
+    _addInitialized();
+  }
 
   /// 播到最后一帧。
   void finish() {
@@ -123,13 +144,28 @@ String _libraryJson() => jsonEncode({
               'source': 'https://example.com/p1.mp4',
               'kind': 'link',
             },
+            {
+              'id': 'v2',
+              'title': '小猪佩奇 第 2 集',
+              'source': 'https://example.com/p2.mp4',
+              'kind': 'link',
+            },
+            {
+              'id': 'v3',
+              'title': '小猪佩奇 第 3 集',
+              'source': 'https://example.com/p3.mp4',
+              'kind': 'link',
+            },
           ],
         },
       ],
     });
 
-Future<Widget> _host() async {
-  SharedPreferences.setMockInitialValues({kVideoLibraryKey: _libraryJson()});
+Future<Widget> _host({bool touchControl = false}) async {
+  SharedPreferences.setMockInitialValues({
+    kVideoLibraryKey: _libraryJson(),
+    if (touchControl) kVideoTouchControlKey: true,
+  });
   final prefs = await SharedPreferences.getInstance();
   return ProviderScope(
     overrides: [prefsProvider.overrideWithValue(prefs)],
@@ -152,9 +188,12 @@ Future<void> _pumpUntilGone(WidgetTester tester, Finder finder) async {
 }
 
 /// 从视频列表点进播放页，并把播放器推到「已经开播」的状态。
-Future<_FakePlayer> _openPlayer(WidgetTester tester) async {
+Future<_FakePlayer> _openPlayer(
+  WidgetTester tester, {
+  bool touchControl = false,
+}) async {
   final fake = _installFakePlayer();
-  await tester.pumpWidget(await _host());
+  await tester.pumpWidget(await _host(touchControl: touchControl));
   await tester.pump();
 
   await tester.tap(find.text('小猪佩奇 第 1 集'));
@@ -347,5 +386,90 @@ void main() {
     expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
 
     await _tearDownTree(tester);
+  });
+
+  testWidgets('开着手势后，轻点画面暂停、再点一下继续', (tester) async {
+    final fake = await _openPlayer(tester, touchControl: true);
+
+    await _touchStage(tester);
+    await _settle(tester);
+    expect(fake.isPlaying, isFalse);
+    expect(fake.calls, contains('pause'));
+
+    await _touchStage(tester);
+    await _settle(tester);
+    expect(fake.isPlaying, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('开着手势后，右划去下一个、左划回上一个', (tester) async {
+    final fake = await _openPlayer(tester, touchControl: true);
+    expect(find.text('小猪佩奇 第 1 集'), findsOneWidget);
+
+    // 右划 → 下一个
+    await tester.drag(find.byType(VideoPlayer), const Offset(120, 0));
+    await _settle(tester);
+    fake.ready();
+    await _settle(tester);
+    expect(find.text('小猪佩奇 第 2 集'), findsOneWidget);
+    expect(fake.isPlaying, isTrue);
+
+    // 左划 → 上一个
+    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
+    await _settle(tester);
+    fake.ready();
+    await _settle(tester);
+    expect(find.text('小猪佩奇 第 1 集'), findsOneWidget);
+    expect(fake.isPlaying, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('第一个视频左划不越界，只给一句提示', (tester) async {
+    final fake = await _openPlayer(tester, touchControl: true);
+
+    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
+    await _settle(tester);
+
+    expect(find.text('已经是第一个视频了'), findsOneWidget);
+    expect(find.text('小猪佩奇 第 1 集'), findsOneWidget);
+    expect(fake.isPlaying, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('手势关着时左右划不换视频', (tester) async {
+    final fake = await _openPlayer(tester);
+
+    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
+    await _settle(tester);
+
+    expect(find.text('小猪佩奇 第 1 集'), findsOneWidget);
+    expect(find.text('小猪佩奇 第 2 集'), findsNothing);
+    expect(fake.isPlaying, isTrue);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('「我的」里的播放页手势开关能开能关，并记在本机', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [prefsProvider.overrideWithValue(prefs)],
+      child: const MaterialApp(home: Scaffold(body: ProfileScreen())),
+    ));
+    await tester.pump();
+
+    expect(find.text('播放页手势'), findsOneWidget);
+    expect(prefs.getBool(kVideoTouchControlKey), isNull);
+
+    await tester.tap(find.text('播放页手势'));
+    await tester.pump();
+    expect(prefs.getBool(kVideoTouchControlKey), isTrue);
+
+    await tester.tap(find.text('播放页手势'));
+    await tester.pump();
+    expect(prefs.getBool(kVideoTouchControlKey), isFalse);
   });
 }

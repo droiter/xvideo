@@ -135,7 +135,11 @@ class _VideoCategoryScreenState extends ConsumerState<VideoCategoryScreen> {
                           ? () => _openArrangeSheet(v)
                           : () => Navigator.of(context).push(
                                 MaterialPageRoute(
-                                  builder: (_) => VideoPlayerScreen(video: v),
+                                  builder: (_) => VideoPlayerScreen(
+                                    video: v,
+                                    // 开着手势控制时左右划就在这个列表里换片。
+                                    playlist: videos,
+                                  ),
                                 ),
                               ),
                       onLockedTap: () => _hintLocked(context, v, record!.count,

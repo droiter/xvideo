@@ -17,6 +17,7 @@ class ProfileScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authControllerProvider.select((s) => s.user));
     final dark = ref.watch(themeControllerProvider);
+    final touch = ref.watch(touchControlProvider);
     final limit = ref.watch(viewLimitSettingsProvider);
     final lib = ref.watch(videoLibraryProvider);
     final scheme = Theme.of(context).colorScheme;
@@ -61,6 +62,16 @@ class ProfileScreen extends ConsumerWidget {
                   value: dark,
                   onChanged: (v) =>
                       ref.read(themeControllerProvider.notifier).setDark(v),
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.touch_app_outlined),
+                  title: const Text('播放页手势'),
+                  subtitle: Text(touch
+                      ? '轻点画面暂停 / 继续，左划上一个、右划下一个'
+                      : '关着：轻点画面只会接着播，左右划不动'),
+                  value: touch,
+                  onChanged: (v) =>
+                      ref.read(touchControlProvider.notifier).setEnabled(v),
                 ),
                 SwitchListTile(
                   secondary: const Icon(Icons.hourglass_top_rounded),
