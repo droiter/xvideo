@@ -403,20 +403,20 @@ void main() {
     await _tearDownTree(tester);
   });
 
-  testWidgets('开着手势后，右划去下一个、左划回上一个', (tester) async {
+  testWidgets('开着手势后，左划去下一个、右划回上一个', (tester) async {
     final fake = await _openPlayer(tester, touchControl: true);
     expect(find.text('小猪佩奇 第 1 集'), findsOneWidget);
 
-    // 右划 → 下一个
-    await tester.drag(find.byType(VideoPlayer), const Offset(120, 0));
+    // 左划 → 下一个
+    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
     await _settle(tester);
     fake.ready();
     await _settle(tester);
     expect(find.text('小猪佩奇 第 2 集'), findsOneWidget);
     expect(fake.isPlaying, isTrue);
 
-    // 左划 → 上一个
-    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
+    // 右划 → 上一个
+    await tester.drag(find.byType(VideoPlayer), const Offset(120, 0));
     await _settle(tester);
     fake.ready();
     await _settle(tester);
@@ -426,10 +426,10 @@ void main() {
     await _tearDownTree(tester);
   });
 
-  testWidgets('第一个视频左划不越界，只给一句提示', (tester) async {
+  testWidgets('第一个视频右划不越界，只给一句提示', (tester) async {
     final fake = await _openPlayer(tester, touchControl: true);
 
-    await tester.drag(find.byType(VideoPlayer), const Offset(-120, 0));
+    await tester.drag(find.byType(VideoPlayer), const Offset(120, 0));
     await _settle(tester);
 
     expect(find.text('已经是第一个视频了'), findsOneWidget);

@@ -233,17 +233,17 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
 
   void _onDragUpdate(DragUpdateDetails d) => _dragDx += d.delta.dx;
 
-  /// 左划上一个、右划下一个（主人定的方向）。划得太短不算。
+  /// 左划下一个、右划上一个（主人定的方向）。划得太短不算。
   void _onDragEnd(DragEndDetails _) {
     final dx = _dragDx;
     _dragDx = 0;
     if (!_touchControl || dx.abs() < _kSwipeMinDx) return;
     if (dx < 0) {
-      _index > 0 ? _goTo(_index - 1) : _toast('已经是第一个视频了');
-    } else {
       _index < _playlist.length - 1
           ? _goTo(_index + 1)
           : _toast('已经是最后一个视频了');
+    } else {
+      _index > 0 ? _goTo(_index - 1) : _toast('已经是第一个视频了');
     }
   }
 

@@ -19,7 +19,7 @@ const String kVideoLoopKey = 'xvideo_video_loop';
 /// 播放页的静音开关。全机共用一份，下次进播放页照旧。
 const String kVideoMuteKey = 'xvideo_video_mute';
 
-/// 播放页手势控制：轻点画面暂停 / 继续，左划上一个、右划下一个。
+/// 播放页手势控制：轻点画面暂停 / 继续，左划下一个、右划上一个。
 /// 缺省关着——小孩看视频手总在屏幕上摸，别一碰就停。
 const String kVideoTouchControlKey = 'xvideo_video_touch_control';
 

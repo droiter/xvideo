@@ -67,7 +67,7 @@ class ProfileScreen extends ConsumerWidget {
                   secondary: const Icon(Icons.touch_app_outlined),
                   title: const Text('播放页手势'),
                   subtitle: Text(touch
-                      ? '轻点画面暂停 / 继续，左划上一个、右划下一个'
+                      ? '轻点画面暂停 / 继续，左划下一个、右划上一个'
                       : '关着：轻点画面只会接着播，左右划不动'),
                   value: touch,
                   onChanged: (v) =>
