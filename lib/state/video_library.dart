@@ -21,6 +21,7 @@ class VideoItem {
     required this.kind,
     this.fingerprint = '',
     this.hidden = false,
+    this.score = kDefaultVideoScore,
   });
 
   factory VideoItem.fromJson(Map<String, dynamic> json) => VideoItem(
@@ -30,6 +31,7 @@ class VideoItem {
         kind: json['kind'] == 'file' ? VideoKind.file : VideoKind.link,
         fingerprint: json['fingerprint'] as String? ?? '',
         hidden: json['hidden'] == true,
+        score: (json['score'] as num?)?.toInt() ?? kDefaultVideoScore,
       );
 
   final String id;
@@ -47,15 +49,20 @@ class VideoItem {
   /// 只是从列表里藏起来，视频本身没删。
   final bool hidden;
 
+  /// 家长给这个视频打的分：缺省 5 分，播放页上/下键加减。
+  /// 孩子那边的分类列表按它从高到低排。
+  final int score;
+
   bool get isLocal => kind == VideoKind.file;
 
-  VideoItem copyWith({String? title, bool? hidden}) => VideoItem(
+  VideoItem copyWith({String? title, bool? hidden, int? score}) => VideoItem(
         id: id,
         title: title ?? this.title,
         source: source,
         kind: kind,
         fingerprint: fingerprint,
         hidden: hidden ?? this.hidden,
+        score: score ?? this.score,
       );
 
   /// 查重用的键：有指纹的用指纹，没有的（链接、早先存下的数据）用 [source]。
@@ -74,6 +81,7 @@ class VideoItem {
         'fingerprint': fingerprint,
         // 没被收起来的就不写这个键，省得把老数据的格式搅乱。
         if (hidden) 'hidden': true,
+        'score': score,
       };
 }
 
@@ -315,6 +323,19 @@ class VideoLibraryController extends Notifier<VideoLibrary> {
               )
             : c,
     ]));
+  }
+
+  /// 改一个视频的分数（夹在 [kMinVideoScore]–[kMaxVideoScore] 之间）。
+  ///
+  /// 播放页只拿得到视频 id、不知道它在哪个分类，所以全库找一遍。
+  Future<void> setVideoScore(String videoId, int score) async {
+    final value = score.clamp(kMinVideoScore, kMaxVideoScore).toInt();
+    for (final c in state.categories) {
+      if (c.videos.any((v) => v.id == videoId)) {
+        await _updateVideo(c.id, videoId, (v) => v.copyWith(score: value));
+        return;
+      }
+    }
   }
 
   /// 家长把视频收起来 / 放出来。收起来的在分类列表里不给孩子看，视频本身没删。

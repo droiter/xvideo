@@ -23,6 +23,14 @@ const String kVideoMuteKey = 'xvideo_video_mute';
 /// 缺省关着——小孩看视频手总在屏幕上摸，别一碰就停。
 const String kVideoTouchControlKey = 'xvideo_video_touch_control';
 
+/// 每个视频的分数：缺省 5 分，播放页的上/下键加减，退回列表按分数从高到低排。
+const int kDefaultVideoScore = 5;
+const int kMinVideoScore = 0;
+const int kMaxVideoScore = 10;
+
+/// 分数锁定：锁上后播放页的上/下键按不动，解锁要家长密码。全机共用一份。
+const String kVideoScoreLockKey = 'xvideo_video_score_lock';
+
 /// 每个视频看到哪儿（毫秒），键是 `xvideo_video_pos_<视频 id>`。
 /// 单独一条一条存，删视频时不用管整张表。
 const String kVideoPositionPrefix = 'xvideo_video_pos_';

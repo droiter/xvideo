@@ -7,6 +7,7 @@ import '../../shared/widgets/empty_hint.dart';
 import '../../state/providers.dart';
 import '../shell/parent_password.dart';
 import 'video_player_screen.dart';
+import 'video_score.dart';
 import 'video_thumbnail.dart';
 
 /// 某个分类下的视频列表，点一个就播。
@@ -77,9 +78,11 @@ class _VideoCategoryScreenState extends ConsumerState<VideoCategoryScreen> {
       );
     }
 
-    // 孩子看到的是「家长没藏起来」的那些；家长模式里连藏起来的一起摆出来。
-    final videos =
-        _parentMode ? category.videos : category.visibleVideos;
+    // 孩子看到的是「家长没藏起来」的那些，按分数从高到低排；
+    // 家长模式里连藏起来的一起摆出来，保持分类里的原顺序（调整位置看的是它）。
+    final videos = _parentMode
+        ? category.videos
+        : _byScore(category.visibleVideos);
     return Scaffold(
       appBar: AppBar(
         title: Text(category.name),
@@ -307,6 +310,19 @@ class _VideoCategoryScreenState extends ConsumerState<VideoCategoryScreen> {
   }
 }
 
+/// 孩子那边的列表按分数从高到低排。分数一样的保持分类里的原顺序 ——
+/// `sort` 本身不稳定，所以带上原下标一起比。
+List<VideoItem> _byScore(List<VideoItem> videos) {
+  final indexed = [
+    for (var i = 0; i < videos.length; i++) (i, videos[i]),
+  ];
+  indexed.sort((a, b) {
+    final byScore = b.$2.score.compareTo(a.$2.score);
+    return byScore != 0 ? byScore : a.$1.compareTo(b.$1);
+  });
+  return [for (final e in indexed) e.$2];
+}
+
 /// 家长模式里「⋮」菜单上的几件事。
 enum _Arrange { hide, up, down, top, bottom }
 
@@ -463,6 +479,24 @@ class _VideoTile extends StatelessWidget {
                                 ),
                               ),
                               const Spacer(),
+                              // 分数：超过 5 分字越来越红，10 分最红。
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: scheme.surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: Text(
+                                  '${video.score}分',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: scoreColor(video.score, base: faded),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 6, vertical: 2),

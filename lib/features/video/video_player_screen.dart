@@ -8,6 +8,8 @@ import 'package:video_player/video_player.dart';
 
 import '../../core/constants.dart';
 import '../../state/providers.dart';
+import '../shell/parent_password.dart';
+import 'video_score.dart';
 
 /// 视频播放页。
 ///
@@ -45,6 +47,15 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   /// 静音开关，也跟着上一次的选择走。
   bool _muted = false;
 
+  /// 分数锁：锁上后上/下键按不动，解锁要家长密码。跟着上一次的选择走。
+  bool _scoreLocked = false;
+
+  /// 播放页里改过的分数（视频 id → 分数）。
+  ///
+  /// 列表传进来的 [VideoItem] 是进页时的快照，改了分要自己记着，
+  /// 换到别的视频再换回来时显示的才是新分数。
+  final Map<String, int> _scores = {};
+
   /// 点画面 / 左右划这套手势开不开（「我的 → 偏好设置」里改）。
   bool _touchControl = false;
 
@@ -79,6 +90,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     _index = i >= 0 ? i : 0;
     _loop = _prefs.getBool(kVideoLoopKey) ?? false;
     _muted = _prefs.getBool(kVideoMuteKey) ?? false;
+    _scoreLocked = _prefs.getBool(kVideoScoreLockKey) ?? false;
     _touchControl = ref.read(touchControlProvider);
     // 防反复观看：打开播放页就算看过一遍。记到下一帧再动手——这一帧还在建
     // 新路由，直接改 provider 会把底下的视频列表标记成要重建。
@@ -207,6 +219,42 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     setState(() => _muted = !_muted);
     _controller?.setVolume(_muted ? 0 : 1);
     _prefs.setBool(kVideoMuteKey, _muted);
+  }
+
+  int _scoreOf(VideoItem v) => _scores[v.id] ?? v.score;
+
+  /// 上/下键：给当前视频加 / 减一分。锁着、或者已经到头就只给一句提示。
+  void _bumpScore(int delta) {
+    if (_scoreLocked) {
+      _toast('分数已锁定，先解锁才能加减分');
+      return;
+    }
+    final v = _video;
+    final current = _scoreOf(v);
+    final next = (current + delta).clamp(kMinVideoScore, kMaxVideoScore).toInt();
+    if (next == current) {
+      _toast(delta > 0
+          ? '已经是最高分 $kMaxVideoScore 分'
+          : '已经是最低分 $kMinVideoScore 分');
+      return;
+    }
+    setState(() => _scores[v.id] = next);
+    // 存进视频库：退回列表时按新分数重排。
+    ref.read(videoLibraryProvider.notifier).setVideoScore(v.id, next);
+  }
+
+  /// 加锁直接锁上；解锁要家长密码，免得孩子自己解开来刷分。
+  Future<void> _toggleScoreLock() async {
+    if (!_scoreLocked) {
+      setState(() => _scoreLocked = true);
+      _prefs.setBool(kVideoScoreLockKey, true);
+      _toast('分数已锁定，孩子按不动上/下键');
+      return;
+    }
+    final ok = await askParentPassword(context, title: '解锁分数');
+    if (!ok || !mounted) return;
+    setState(() => _scoreLocked = false);
+    _prefs.setBool(kVideoScoreLockKey, false);
   }
 
   /// 点画面：开着手势控制就暂停 / 继续，关着只用来「接着播」。
@@ -373,7 +421,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                 onPressed: _togglePlay,
                 tooltip: value.isPlaying ? '暂停' : '播放',
                 visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+                constraints: const BoxConstraints.tightFor(width: 36, height: 36),
                 icon: Icon(
                   value.isPlaying
                       ? Icons.pause_rounded
@@ -400,11 +448,20 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                   ),
                 ),
               ),
-              Text(
-                '${_fmt(value.position)} / ${_fmt(value.duration)}',
-                style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+              // 时长最多占这么宽：手机窄屏上按钮多了，太长的字就等比缩一点，
+              // 别把进度条挤没。
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 72),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    '${_fmt(value.position)} / ${_fmt(value.duration)}',
+                    maxLines: 1,
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 11.5),
+                  ),
+                ),
               ),
-              const SizedBox(width: 4),
               // 开着的时候按钮亮起来，一眼能看出现在是不是在循环 / 静音。
               _controlIcon(
                 icon: Icons.repeat_rounded,
@@ -415,9 +472,34 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
               _controlIcon(
                 icon: _muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
                 active: _muted,
+                // 静音键一直亮着：它是「按一下就有声音」的救命键，别显得像按不了。
+                alwaysBright: true,
                 tooltip: _muted ? '取消静音' : '静音',
                 onPressed: _toggleMute,
               ),
+              _controlIcon(
+                icon: _scoreLocked
+                    ? Icons.lock_rounded
+                    : Icons.lock_open_rounded,
+                active: _scoreLocked,
+                tooltip: _scoreLocked ? '解锁分数（要家长密码）' : '锁定分数',
+                onPressed: _toggleScoreLock,
+              ),
+              _scoreButton(Icons.keyboard_arrow_up_rounded, '加一分', 1),
+              SizedBox(
+                width: 36,
+                child: Text(
+                  '${_scoreOf(_video)}分',
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: scoreColor(_scoreOf(_video)),
+                  ),
+                ),
+              ),
+              _scoreButton(Icons.keyboard_arrow_down_rounded, '减一分', -1),
             ],
           ),
         ),
@@ -425,12 +507,13 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     );
   }
 
-  /// 控制条右边的小圆钮：循环 / 静音共用，亮着表示开着。
+  /// 控制条右边的小圆钮：循环 / 静音 / 分数锁共用，亮着表示开着。
   Widget _controlIcon({
     required IconData icon,
     required bool active,
     required String tooltip,
     required VoidCallback onPressed,
+    bool alwaysBright = false,
   }) {
     return IconButton(
       onPressed: onPressed,
@@ -438,8 +521,24 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
       iconSize: 21,
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-      icon: Icon(icon, color: active ? Colors.white : Colors.white38),
+      constraints: const BoxConstraints.tightFor(width: 30, height: 36),
+      icon: Icon(
+        icon,
+        color: alwaysBright || active ? Colors.white : Colors.white38,
+      ),
+    );
+  }
+
+  /// 分数上/下键。锁着时变暗，但留着点击的提示。
+  Widget _scoreButton(IconData icon, String tooltip, int delta) {
+    return IconButton(
+      onPressed: () => _bumpScore(delta),
+      tooltip: tooltip,
+      iconSize: 21,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 36),
+      icon: Icon(icon, color: _scoreLocked ? Colors.white24 : Colors.white),
     );
   }
 

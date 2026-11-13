@@ -11,6 +11,7 @@ import 'package:xvideo/core/constants.dart';
 import 'package:xvideo/features/profile/profile_screen.dart';
 import 'package:xvideo/features/video/video_category_screen.dart';
 import 'package:xvideo/features/video/video_player_screen.dart';
+import 'package:xvideo/features/video/video_score.dart';
 import 'package:xvideo/state/providers.dart';
 
 /// 假的播放器实现。
@@ -214,6 +215,16 @@ Future<void> _touchStage(WidgetTester tester) async {
 Future<void> _tearDownTree(WidgetTester tester) =>
     tester.pumpWidget(const SizedBox());
 
+/// 把底部的提示条（SnackBar）清掉，连退场动画一起走完，别让它盖住控制条。
+Future<void> _dismissToast(WidgetTester tester) async {
+  tester
+      .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+      .clearSnackBars();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
 void main() {
   testWidgets('视频放完自动退回视频列表', (tester) async {
     final fake = await _openPlayer(tester);
@@ -289,6 +300,13 @@ void main() {
         lessThanOrEqualTo(360));
     expect(tester.getRect(find.byIcon(Icons.volume_up_rounded)).right,
         lessThanOrEqualTo(360));
+    // 分数锁、上/下键也在同一行，同样不能出屏。
+    expect(tester.getRect(find.byIcon(Icons.lock_open_rounded)).right,
+        lessThanOrEqualTo(360));
+    expect(
+        tester.getRect(find.byIcon(Icons.keyboard_arrow_down_rounded)).right,
+        lessThanOrEqualTo(360));
+    expect(find.text('5分'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
     expect(tester.takeException(), isNull);
 
@@ -386,6 +404,111 @@ void main() {
     expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
 
     await _tearDownTree(tester);
+  });
+
+  testWidgets('静音键一直亮着，静音后也不变暗', (tester) async {
+    await _openPlayer(tester);
+    expect(tester.widget<Icon>(find.byIcon(Icons.volume_up_rounded)).color,
+        Colors.white);
+
+    await tester.tap(find.byIcon(Icons.volume_up_rounded));
+    await _settle(tester);
+
+    expect(tester.widget<Icon>(find.byIcon(Icons.volume_off_rounded)).color,
+        Colors.white);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('上/下键给视频加减分，缺省 5 分，记进视频库', (tester) async {
+    await _openPlayer(tester);
+    expect(find.text('5分'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
+    await _settle(tester);
+    expect(find.text('6分'), findsOneWidget);
+
+    final prefs = await SharedPreferences.getInstance();
+    final json =
+        jsonDecode(prefs.getString(kVideoLibraryKey)!) as Map<String, dynamic>;
+    final scores = {
+      for (final v in (json['categories'][0]['videos'] as List))
+        v['id'] as String: v['score'] as int,
+    };
+    expect(scores['v1'], 6, reason: '加的分要写进视频库');
+    expect(scores['v2'], 5);
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_down_rounded));
+    await _settle(tester);
+    expect(find.text('5分'), findsOneWidget);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('锁上分数后上/下键按不动，解锁要家长密码', (tester) async {
+    await _openPlayer(tester);
+
+    // 加锁不用密码，锁完等提示自己退掉，别盖住底下的按钮。
+    await tester.tap(find.byIcon(Icons.lock_open_rounded));
+    await _settle(tester);
+    expect(find.byIcon(Icons.lock_rounded), findsOneWidget);
+    await _dismissToast(tester);
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
+    await tester.pump();
+    expect(find.text('5分'), findsOneWidget, reason: '锁着的时候分不动');
+    expect(find.text('分数已锁定，先解锁才能加减分'), findsOneWidget);
+    await _dismissToast(tester);
+
+    // 解锁：先弹家长密码框，输对了才解开。
+    await tester.tap(find.byIcon(Icons.lock_rounded));
+    await _settle(tester);
+    expect(find.byKey(const ValueKey('parent-password-input')), findsOneWidget);
+    await tester.enterText(
+        find.byKey(const ValueKey('parent-password-input')),
+        kDefaultParentPassword);
+    await tester.tap(find.byKey(const ValueKey('parent-password-ok')));
+    await _settle(tester);
+    expect(find.byIcon(Icons.lock_open_rounded), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
+    await _settle(tester);
+    expect(find.text('6分'), findsOneWidget);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('退回视频列表后按分数从高到低排', (tester) async {
+    await _openPlayer(tester);
+
+    // 第 1 集连加三分到 8 分。
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
+      await _settle(tester);
+    }
+    expect(find.text('8分'), findsOneWidget);
+
+    await tester.pageBack();
+    await _settle(tester);
+    expect(find.byType(VideoCategoryScreen), findsOneWidget);
+
+    final first = tester.getTopLeft(find.text('小猪佩奇 第 1 集'));
+    final second = tester.getTopLeft(find.text('小猪佩奇 第 2 集'));
+    final third = tester.getTopLeft(find.text('小猪佩奇 第 3 集'));
+    // 第 1 集 8 分排最前；第 2、3 集都是 5 分，保持原来的先后。
+    expect(first.dx, lessThan(second.dx));
+    expect(second.dx, lessThan(third.dx));
+
+    await _tearDownTree(tester);
+  });
+
+  test('分数颜色：5 分不红，10 分最红', () {
+    expect(scoreColor(kDefaultVideoScore), Colors.white);
+    expect(scoreColor(kMaxVideoScore), const Color(0xFFFF1744));
+    // 越往上红得越深：绿、蓝两个分量一起往下掉（红色的红分量本来就已经满了）。
+    expect(scoreColor(7).g, lessThan(scoreColor(6).g));
+    expect(scoreColor(9).g, lessThan(scoreColor(7).g));
+    expect(scoreColor(6), isNot(Colors.white));
   });
 
   testWidgets('开着手势后，轻点画面暂停、再点一下继续', (tester) async {

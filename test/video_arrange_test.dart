@@ -12,24 +12,38 @@ import 'package:xvideo/features/video/video_library_screen.dart';
 import 'package:xvideo/features/video/video_player_screen.dart';
 import 'package:xvideo/state/providers.dart';
 
-Map<String, Object> _video(String id, String title, {bool hidden = false}) => {
+Map<String, Object> _video(String id, String title,
+        {bool hidden = false, int score = kDefaultVideoScore}) =>
+    {
       'id': id,
       'title': title,
       'source': 'https://example.com/$id.mp4',
       'kind': 'link',
       if (hidden) 'hidden': true,
+      if (score != kDefaultVideoScore) 'score': score,
     };
 
-/// 1 个分类 3 个视频；[hidden] 里列到的那些标成家长收起来了。
-String _libraryJson({Set<String> hidden = const {}}) => jsonEncode({
+/// 1 个分类 3 个视频；[hidden] 里列到的那些标成家长收起来了，
+/// [scores] 里给了分的用给的分（没给就是缺省 5 分）。
+String _libraryJson({
+  Set<String> hidden = const {},
+  Map<String, int> scores = const {},
+}) =>
+    jsonEncode({
       'categories': [
         {
           'id': 'vc1',
           'name': '动画片',
           'videos': [
-            _video('v1', '小猪佩奇 第 1 集', hidden: hidden.contains('v1')),
-            _video('v2', '汪汪队 第 2 集', hidden: hidden.contains('v2')),
-            _video('v3', '海底小纵队', hidden: hidden.contains('v3')),
+            _video('v1', '小猪佩奇 第 1 集',
+                hidden: hidden.contains('v1'),
+                score: scores['v1'] ?? kDefaultVideoScore),
+            _video('v2', '汪汪队 第 2 集',
+                hidden: hidden.contains('v2'),
+                score: scores['v2'] ?? kDefaultVideoScore),
+            _video('v3', '海底小纵队',
+                hidden: hidden.contains('v3'),
+                score: scores['v3'] ?? kDefaultVideoScore),
           ],
         },
       ],
@@ -37,10 +51,11 @@ String _libraryJson({Set<String> hidden = const {}}) => jsonEncode({
 
 Future<ProviderContainer> _container({
   Set<String> hidden = const {},
+  Map<String, int> scores = const {},
   Map<String, Object> extra = const {},
 }) async {
   SharedPreferences.setMockInitialValues({
-    kVideoLibraryKey: _libraryJson(hidden: hidden),
+    kVideoLibraryKey: _libraryJson(hidden: hidden, scores: scores),
     ...extra,
   });
   final prefs = await SharedPreferences.getInstance();
@@ -93,6 +108,51 @@ List<String> _order(ProviderContainer c) =>
     c.read(videoLibraryProvider).byId('vc1')!.videos.map((v) => v.id).toList();
 
 void main() {
+  group('分数', () {
+    test('缺省 5 分；老数据没有 score 字段也按 5 分算', () {
+      final lib = VideoLibrary.fromJson(
+          jsonDecode(_libraryJson()) as Map<String, dynamic>);
+      expect(
+          lib.byId('vc1')!.videos.every((v) => v.score == kDefaultVideoScore),
+          isTrue);
+    });
+
+    test('改分夹在 0–10 之间，并落盘', () async {
+      final c = await _container();
+      final lib = c.read(videoLibraryProvider.notifier);
+
+      await lib.setVideoScore('v2', 9);
+      expect(c.read(videoLibraryProvider).byId('vc1')!.videos[1].score, 9);
+
+      await lib.setVideoScore('v2', 99);
+      expect(c.read(videoLibraryProvider).byId('vc1')!.videos[1].score,
+          kMaxVideoScore);
+
+      await lib.setVideoScore('v2', -3);
+      expect(c.read(videoLibraryProvider).byId('vc1')!.videos[1].score,
+          kMinVideoScore);
+
+      final again = ProviderContainer(
+        overrides: [prefsProvider.overrideWithValue(c.read(prefsProvider))],
+      );
+      addTearDown(again.dispose);
+      expect(again.read(videoLibraryProvider).byId('vc1')!.videos[1].score,
+          kMinVideoScore);
+    });
+
+    testWidgets('孩子那边按分数从高到低排，同分保持原顺序', (tester) async {
+      final c = await _container(scores: {'v1': 6, 'v3': 8});
+      await _pumpCategory(tester, c);
+
+      final v3 = tester.getTopLeft(find.text('海底小纵队')); // 8 分
+      final v1 = tester.getTopLeft(find.text('小猪佩奇 第 1 集')); // 6 分
+      final v2 = tester.getTopLeft(find.text('汪汪队 第 2 集')); // 5 分
+      expect(v3.dx, lessThan(v1.dx));
+      expect(v1.dx, lessThan(v2.dx));
+      expect(find.text('8分'), findsOneWidget);
+    });
+  });
+
   group('家长收起来 / 放出来', () {
     test('收起来的视频还在库里，只是不给孩子看', () async {
       final c = await _container();
