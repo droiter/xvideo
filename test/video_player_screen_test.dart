@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -300,11 +301,13 @@ void main() {
         lessThanOrEqualTo(360));
     expect(tester.getRect(find.byIcon(Icons.volume_up_rounded)).right,
         lessThanOrEqualTo(360));
-    // 分数锁、上/下键也在同一行，同样不能出屏。
+    // 锁、上/下键也在同一行，同样不能出屏；删除键在顶栏，也不能出屏。
     expect(tester.getRect(find.byIcon(Icons.lock_open_rounded)).right,
         lessThanOrEqualTo(360));
     expect(
         tester.getRect(find.byIcon(Icons.keyboard_arrow_down_rounded)).right,
+        lessThanOrEqualTo(360));
+    expect(tester.getRect(find.byIcon(Icons.delete_outline_rounded)).right,
         lessThanOrEqualTo(360));
     expect(find.text('5分'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
@@ -445,7 +448,7 @@ void main() {
     await _tearDownTree(tester);
   });
 
-  testWidgets('锁上分数后上/下键按不动，解锁要家长密码', (tester) async {
+  testWidgets('锁上后上/下键和删除键都按不动，解锁要家长密码', (tester) async {
     await _openPlayer(tester);
 
     // 加锁不用密码，锁完等提示自己退掉，别盖住底下的按钮。
@@ -454,10 +457,24 @@ void main() {
     expect(find.byIcon(Icons.lock_rounded), findsOneWidget);
     await _dismissToast(tester);
 
+    // 上/下键和删除键都变灰。
+    expect(
+        tester.widget<Icon>(find.byIcon(Icons.keyboard_arrow_up_rounded)).color,
+        Colors.white24);
+    expect(tester.widget<Icon>(find.byIcon(Icons.delete_outline_rounded)).color,
+        Colors.white24);
+
     await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
     await tester.pump();
     expect(find.text('5分'), findsOneWidget, reason: '锁着的时候分不动');
-    expect(find.text('分数已锁定，先解锁才能加减分'), findsOneWidget);
+    expect(find.text('已锁定，先解锁（要家长密码）才能加减分'), findsOneWidget);
+    await _dismissToast(tester);
+
+    // 删除键同样只给提示，不弹删除确认框。
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+    await tester.pump();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('已锁定，先解锁（要家长密码）才能删除视频'), findsOneWidget);
     await _dismissToast(tester);
 
     // 解锁：先弹家长密码框，输对了才解开。
@@ -474,7 +491,101 @@ void main() {
     await tester.tap(find.byIcon(Icons.keyboard_arrow_up_rounded));
     await _settle(tester);
     expect(find.text('6分'), findsOneWidget);
+    expect(tester.widget<Icon>(find.byIcon(Icons.delete_outline_rounded)).color,
+        Colors.white, reason: '解锁后删除键恢复可点');
 
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('解锁后删除当前视频：确认后从列表移除并退回列表', (tester) async {
+    await _openPlayer(tester);
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+    await _settle(tester);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('删除视频'), findsWidgets);
+
+    await tester.tap(find.text('删除'));
+    await _settle(tester);
+    await _pumpUntilGone(tester, find.byType(VideoPlayerScreen));
+
+    expect(find.byType(VideoPlayerScreen), findsNothing);
+    expect(find.byType(VideoCategoryScreen), findsOneWidget);
+    expect(find.text('小猪佩奇 第 1 集'), findsNothing);
+    expect(find.text('小猪佩奇 第 2 集'), findsOneWidget);
+
+    final prefs = await SharedPreferences.getInstance();
+    final json =
+        jsonDecode(prefs.getString(kVideoLibraryKey)!) as Map<String, dynamic>;
+    final ids = [
+      for (final v in (json['categories'][0]['videos'] as List)) v['id'] as String
+    ];
+    expect(ids, ['v2', 'v3'], reason: '删掉的视频要写回视频库');
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('删除确认框点取消，视频还在，人还留在播放页', (tester) async {
+    await _openPlayer(tester);
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+    await _settle(tester);
+    await tester.tap(find.text('取消'));
+    await _settle(tester);
+
+    expect(find.byType(VideoPlayerScreen), findsOneWidget);
+    final prefs = await SharedPreferences.getInstance();
+    final json =
+        jsonDecode(prefs.getString(kVideoLibraryKey)!) as Map<String, dynamic>;
+    expect((json['categories'][0]['videos'] as List).length, 3);
+
+    await _tearDownTree(tester);
+  });
+
+  testWidgets('删除本机视频时，应用目录里的副本也一起删掉', (tester) async {
+    // 测试跑在假时钟里，用同步 IO 建临时文件，别 await 真异步的 Future。
+    final dir = Directory.systemTemp.createTempSync('xvideo_del_');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/1757500000000_佩奇.mp4')
+      ..writeAsBytesSync(List.filled(512, 3));
+
+    final fake = _installFakePlayer();
+    SharedPreferences.setMockInitialValues({
+      kVideoLibraryKey: jsonEncode({
+        'categories': [
+          {
+            'id': 'vc1',
+            'name': '动画片',
+            'videos': [
+              {
+                'id': 'v1',
+                'title': '本机的佩奇',
+                'source': file.path,
+                'kind': 'file',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [prefsProvider.overrideWithValue(prefs)],
+      child: const MaterialApp(home: VideoCategoryScreen(categoryId: 'vc1')),
+    ));
+    await tester.pump();
+    await tester.tap(find.text('本机的佩奇'));
+    await _settle(tester);
+    fake.ready();
+    await _settle(tester);
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+    await _settle(tester);
+    await tester.tap(find.text('删除'));
+    await _settle(tester);
+    await _pumpUntilGone(tester, find.byType(VideoPlayerScreen));
+
+    expect(file.existsSync(), isFalse, reason: '应用目录里的副本要删掉');
     await _tearDownTree(tester);
   });
 

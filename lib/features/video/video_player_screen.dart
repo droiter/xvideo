@@ -9,7 +9,9 @@ import 'package:video_player/video_player.dart';
 import '../../core/constants.dart';
 import '../../state/providers.dart';
 import '../shell/parent_password.dart';
+import 'video_import.dart' show deleteLocalVideoFile;
 import 'video_score.dart';
+import 'video_thumbnail.dart' show videoThumbCacheProvider;
 
 /// 视频播放页。
 ///
@@ -47,8 +49,9 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
   /// 静音开关，也跟着上一次的选择走。
   bool _muted = false;
 
-  /// 分数锁：锁上后上/下键按不动，解锁要家长密码。跟着上一次的选择走。
-  bool _scoreLocked = false;
+  /// 控制键锁（家长模式）：锁上后上/下键和删除键都按不动，
+  /// 解锁要家长密码。跟着上一次的选择走。
+  bool _locked = false;
 
   /// 播放页里改过的分数（视频 id → 分数）。
   ///
@@ -90,7 +93,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     _index = i >= 0 ? i : 0;
     _loop = _prefs.getBool(kVideoLoopKey) ?? false;
     _muted = _prefs.getBool(kVideoMuteKey) ?? false;
-    _scoreLocked = _prefs.getBool(kVideoScoreLockKey) ?? false;
+    _locked = _prefs.getBool(kVideoScoreLockKey) ?? false;
     _touchControl = ref.read(touchControlProvider);
     // 防反复观看：打开播放页就算看过一遍。记到下一帧再动手——这一帧还在建
     // 新路由，直接改 provider 会把底下的视频列表标记成要重建。
@@ -225,8 +228,8 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
 
   /// 上/下键：给当前视频加 / 减一分。锁着、或者已经到头就只给一句提示。
   void _bumpScore(int delta) {
-    if (_scoreLocked) {
-      _toast('分数已锁定，先解锁才能加减分');
+    if (_locked) {
+      _toast('已锁定，先解锁（要家长密码）才能加减分');
       return;
     }
     final v = _video;
@@ -243,18 +246,61 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
     ref.read(videoLibraryProvider.notifier).setVideoScore(v.id, next);
   }
 
-  /// 加锁直接锁上；解锁要家长密码，免得孩子自己解开来刷分。
-  Future<void> _toggleScoreLock() async {
-    if (!_scoreLocked) {
-      setState(() => _scoreLocked = true);
+  /// 加锁直接锁上；解锁就是进家长模式，要家长密码。
+  Future<void> _toggleLock() async {
+    if (!_locked) {
+      setState(() => _locked = true);
       _prefs.setBool(kVideoScoreLockKey, true);
-      _toast('分数已锁定，孩子按不动上/下键');
+      _toast('已锁定：上/下键和删除键都按不动');
       return;
     }
-    final ok = await askParentPassword(context, title: '解锁分数');
+    final ok = await askParentPassword(context, title: '进入家长模式');
     if (!ok || !mounted) return;
-    setState(() => _scoreLocked = false);
+    setState(() => _locked = false);
     _prefs.setBool(kVideoScoreLockKey, false);
+  }
+
+  /// 删除键：把正在播的这个视频从库里删掉（本机文件也一起删）。
+  /// 锁着时和上/下键一样按不动。
+  Future<void> _deleteCurrentVideo() async {
+    if (_locked) {
+      _toast('已锁定，先解锁（要家长密码）才能删除视频');
+      return;
+    }
+    final v = _video;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除视频'),
+        content: Text(v.isLocal
+            ? '「${v.title}」会从列表里移除，应用里的那份视频文件也会一起删除。'
+            : '「${v.title}」会从列表里移除。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    // 文件都要删了，续播位置也别留着。
+    _clearPosition();
+    final old = _controller;
+    old?.pause();
+    unawaited(old?.dispose());
+    setState(() => _controller = null);
+
+    await ref.read(videoLibraryProvider.notifier).removeVideoById(v.id);
+    if (v.isLocal) {
+      await deleteLocalVideoFile(v.source);
+      await ref.read(videoThumbCacheProvider).remove(v.id);
+    }
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
   }
 
   /// 点画面：开着手势控制就暂停 / 继续，关着只用来「接着播」。
@@ -366,6 +412,7 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 16.5, fontWeight: FontWeight.w700),
         ),
+        actions: [_deleteButton()],
       ),
       body: SafeArea(
         child: _error != null
@@ -478,12 +525,10 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
                 onPressed: _toggleMute,
               ),
               _controlIcon(
-                icon: _scoreLocked
-                    ? Icons.lock_rounded
-                    : Icons.lock_open_rounded,
-                active: _scoreLocked,
-                tooltip: _scoreLocked ? '解锁分数（要家长密码）' : '锁定分数',
-                onPressed: _toggleScoreLock,
+                icon: _locked ? Icons.lock_rounded : Icons.lock_open_rounded,
+                active: _locked,
+                tooltip: _locked ? '解锁（要家长密码）' : '锁定上/下键和删除键',
+                onPressed: _toggleLock,
               ),
               _scoreButton(Icons.keyboard_arrow_up_rounded, '加一分', 1),
               SizedBox(
@@ -538,7 +583,26 @@ class _VideoPlayerScreenState extends ConsumerState<VideoPlayerScreen> {
       padding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints.tightFor(width: 30, height: 36),
-      icon: Icon(icon, color: _scoreLocked ? Colors.white24 : Colors.white),
+      icon: Icon(icon, color: _locked ? Colors.white24 : Colors.white),
+    );
+  }
+
+  /// 顶栏右边的删除键：跟分数上/下键一样，锁着时变暗，按下去只提示去解锁。
+  ///
+  /// 没塞进底部控制条：那一行在 360 宽的手机上已经刚好挤满，再加一个键
+  /// 进度条就没地方了。
+  Widget _deleteButton() {
+    return IconButton(
+      onPressed: _deleteCurrentVideo,
+      tooltip: _locked ? '解锁后才能删除视频' : '删除这个视频',
+      iconSize: 21,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 36),
+      icon: Icon(
+        Icons.delete_outline_rounded,
+        color: _locked ? Colors.white24 : Colors.white,
+      ),
     );
   }
 

@@ -325,6 +325,16 @@ class VideoLibraryController extends Notifier<VideoLibrary> {
     ]));
   }
 
+  /// 按视频 id 删掉一条（播放页只拿得到 id，不知道它在哪个分类）。
+  Future<void> removeVideoById(String videoId) async {
+    for (final c in state.categories) {
+      if (c.videos.any((v) => v.id == videoId)) {
+        await removeVideo(c.id, videoId);
+        return;
+      }
+    }
+  }
+
   /// 改一个视频的分数（夹在 [kMinVideoScore]–[kMaxVideoScore] 之间）。
   ///
   /// 播放页只拿得到视频 id、不知道它在哪个分类，所以全库找一遍。
