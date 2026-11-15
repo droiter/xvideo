@@ -36,9 +36,31 @@ class _VideoCategoryScreenState extends ConsumerState<VideoCategoryScreen> {
   /// 隐藏 / 放出、往前排 / 往后排 / 置顶 / 置尾。退出这个页面就自动关掉。
   bool _parentMode = false;
 
+  /// 列表滚到哪儿了。退出这个页面时记下来，下次点进同一个分类接着看。
+  late final ScrollController _scroll;
+  late final CategoryScroll _scrollStore;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollStore = ref.read(categoryScrollProvider.notifier);
+    _scroll = ScrollController(
+      initialScrollOffset: _scrollStore.offsetOf(widget.categoryId),
+    );
+    _scroll.addListener(_rememberScroll);
+  }
+
+  /// 边滚边记（只是往内存里写个数），这样不管怎么退出去都留得住位置。
+  void _rememberScroll() {
+    if (!_scroll.hasClients) return;
+    _scrollStore.save(widget.categoryId, _scroll.offset);
+  }
+
   @override
   void dispose() {
     _ticker?.cancel();
+    _scroll.removeListener(_rememberScroll);
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -108,6 +130,7 @@ class _VideoCategoryScreenState extends ConsumerState<VideoCategoryScreen> {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
               child: LayoutBuilder(
                 builder: (context, constraints) => GridView.builder(
+                  controller: _scroll,
                   padding: const EdgeInsets.only(bottom: 20),
                   itemCount: videos.length,
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(

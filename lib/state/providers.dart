@@ -2,6 +2,7 @@
 library;
 
 export 'auth.dart';
+export 'category_scroll.dart';
 export 'onboarding.dart';
 export 'player_gesture.dart';
 export 'prefs.dart';
